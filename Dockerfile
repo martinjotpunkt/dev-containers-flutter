@@ -1,60 +1,108 @@
-FROM ubuntu:focal
+# Alpine
+ARG ALPINE_VERSION=latest
+
+# Java
+ARG JAVA_VERSION=amazon-corretto-21
+
+# Android
+# ANDROID_SDK_TOOLS_VERSION Comes from https://developer.android.com/studio/#command-tools
+ARG ANDROID_SDK_TOOLS_VERSION=8512546
+ARG ANDROID_PLATFORM_VERSION=android-31
+ARG ANDROID_BUILD_TOOL_VERSION=33.0.0
+
+# Flutter
+ARG FLUTTER_SDK_VERSION=stable
+ARG FLUTTER_SDK_REPOSITORY_URL="https://github.com/flutter/flutter.git"
+
+# Glibc
+ARG GLIBC_RESOURCE_URL="https://github.com/sgerrand/alpine-pkg-glibc"
+ARG GLIBC_VERSION="2.33-r0"
+
+FROM alpine:$ALPINE_VERSION AS build
+
+USER root
+WORKDIR /
+
+ARG JAVA_VERSION
+
+ARG GLIBC_VERSION
+ARG GLIBC_RESOURCE_URL
+
+ARG ANDROID_SDK_TOOLS_VERSION
+ARG ANDROID_PLATFORM_VERSION
+ARG ANDROID_BUILD_TOOL_VERSION
+
+ARG FLUTTER_SDK_VERSION
+ARG FLUTTER_SDK_REPOSITORY_URL
 
 # Set environment variables
-ENV ANDROID_SDK_ROOT=/usr/lib/android-sdk
+# Glibc
+ENV GLIBC_VERSION=$GLIBC_VERSION \
+    GLIBC_RESOURCE_URL=$GLIBC_RESOURCE_URL
 
-ENV FLUTTER_SDK_ROOT=/usr/lib/flutter
-ENV FLUTTER_SDK_VERSION=3.27.1-stable
+# Java
+ENV JAVA_VERSION=$JAVA_VERSION
+
+# Android
+ENV ANDROID_PLATFORM_VERSION=$ANDROID_PLATFORM_VERSION \
+    ANDROID_BUILD_TOOL_VERSION=$ANDROID_BUILD_TOOL_VERSION \
+    ANDROID_SDK_TOOLS_VERSION=$ANDROID_SDK_TOOLS_VERSION \
+    ANDROID_SDK_ROOT=/usr/lib/android-sdk
+
+# Flutter
+ENV FLUTTER_SDK_VERSION=$FLUTTER_SDK_VERSION \
+    FLUTTER_SDK_REPOSITORY_URL=$FLUTTER_SDK_REPOSITORY_URL \
+    FLUTTER_SDK_ROOT=/usr/lib/flutter \
+    FLUTTER_PUB_CACHE=/var/tmp/.pub_cache
 
 # Include flutter and android tools in path
-ENV PATH="${PATH}:${FLUTTER_SDK_ROOT}/bin:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools"
+ENV PATH="${PATH}:${FLUTTER_SDK_ROOT}/bin:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/:${ANDROID_SDK_ROOT}/platform-tools"
 
-# Enable noninteractive installation
-ENV DEBIAN_FRONTEND=noninteractive
+# Install linux dependency and utils
+# gcompat is needed for clutter https://github.com/flutter/flutter/issues/73260
+RUN set -eux; mkdir -p /usr/lib /tmp/glibc \
+    #&& echo "flutter:x:101:flutter" >> /etc/group \
+    #&& echo "flutter:x:101:101:Flutter user,,,:/home:/sbin/nologin" >> /etc/passwd \
+    && apk --no-cache add bash curl git ca-certificates wget unzip tar gcompat \
+     libxext libxrender libxtst libxi freetype procps openssh \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apk/*
 
-# Install dependencies and tools
-RUN apt-get update && apt-get upgrade -y && \
-    apt-get install -y \
-    watchman \
-    openjdk-17-jdk \
-    android-sdk \
-    wget \
-    unzip \
-    zip \
-    curl \
-    git-all \
-    xz-utils \
-    libglu1-mesa \
-    libc6:amd64 libstdc++6:amd64 lib32z1 libbz2-1.0:amd64 && \
-    rm -rf /var/lib/apt/lists/*
 
-# Add flutter to safe directory in git
-RUN git config --global --add safe.directory /usr/lib/flutter
+# Get glibc for current architecure
+RUN set -eux; wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://alpine-pkgs.sgerrand.com/sgerrand.rsa.pub \
+    && wget -O /tmp/glibc/glibc.apk ${GLIBC_RESOURCE_URL}/releases/download/${GLIBC_VERSION}/glibc-${GLIBC_VERSION}.apk \
+    && wget -O /tmp/glibc/glibc-bin.apk ${GLIBC_RESOURCE_URL}/releases/download/${GLIBC_VERSION}/glibc-bin-${GLIBC_VERSION}.apk
 
-# Configure git user name and email
-RUN git config --global user.name "Your Name" \
-    && git config --global user.email "mail@example.com"
+# Download and install Java
+RUN set -eux; wget -O /etc/apk/keys/amazoncorretto.rsa.pub https://apk.corretto.aws/amazoncorretto.rsa.pub \
+    && echo "https://apk.corretto.aws/" >> /etc/apk/repositories \
+    && apk update \
+    && apk add --no-cache ${JAVA_VERSION} \
+    && rm -rf /tmp/* /var/lib/apt/lists/* /var/cache/apk/* /usr/share/man/* /usr/share/doc
 
 # Download and install Android Command Line Tools
-RUN mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools && \
-    wget -O commandlinetools.zip "https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip" && \
-    unzip commandlinetools.zip -d ${ANDROID_SDK_ROOT}/cmdline-tools && \
-    mv ${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools ${ANDROID_SDK_ROOT}/cmdline-tools/latest && \
-    rm commandlinetools.zip
 
-# Accept Android SDK licenses and install necessary components
-RUN yes | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --licenses && \
-    ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;33.0.0"
+RUN wget -q https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_SDK_TOOLS_VERSION}_latest.zip -O /tmp/android-sdk-tools.zip \
+    && unzip -q /tmp/android-sdk-tools.zip -d /tmp/ \
+    && mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools/latest /root/.android \
+    && mv /tmp/cmdline-tools/* ${ANDROID_SDK_ROOT}/cmdline-tools/latest/ \
+    && rm -rf /tmp/* \
+    && touch /root/.android/repositories.cfg \
+    && yes | sdkmanager --sdk_root=${ANDROID_SDK_ROOT} --licenses \
+    && sdkmanager --sdk_root=${ANDROID_SDK_ROOT} --install "platform-tools" "emulator" "extras;google;instantapps" \
+    && sdkmanager --sdk_root=${ANDROID_SDK_ROOT} --install "platforms;${ANDROID_PLATFORM_VERSION}" "build-tools;${ANDROID_BUILD_TOOL_VERSION}"
 
 # Insall Flutter SDK
-RUN mkdir -p ${FLUTTER_SDK_ROOT} && \
-    cd ${FLUTTER_SDK_ROOT} && \
-    curl -OL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_SDK_VERSION}.tar.xz && \
-    tar -xf flutter_linux_${FLUTTER_SDK_VERSION}.tar.xz -C /usr/lib/ && \
-    rm -rf flutter_linux_${FLUTTER_SDK_VERSION}.tar.xz
-
-# Disable Flutter telemetry
-RUN flutter --disable-analytics
+RUN mkdir -p ${FLUTTER_SDK_ROOT} $FLUTTER_PUB_CACHE \
+    && git clone -b ${FLUTTER_SDK_VERSION} --depth 1 ${FLUTTER_SDK_REPOSITORY_URL} ${FLUTTER_SDK_ROOT} \
+    && cd "${FLUTTER_SDK_ROOT}" \
+    && git gc --prune=all \
+    && cd "${FLUTTER_SDK_ROOT}/bin" \
+    && dart --disable-analytics \
+    && yes "y" | flutter doctor --android-licenses \
+    && flutter config --no-analytics --enable-android \
+    && flutter --disable-analytics \
+    && flutter precache --universal --android
 
 # Default shell to bash
 SHELL ["/bin/bash", "-c"]
